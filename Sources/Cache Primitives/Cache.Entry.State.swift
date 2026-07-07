@@ -58,7 +58,12 @@ extension Cache.Entry {
         /// Value successfully computed and cached.
         case ready(Value)
 
+        // reason: structural bottom-out — mirrors Cache.Error.computeFailed;
+        // `Cache` is not generic over the compute closure's error type (see
+        // the WHY note above on this enum's @unchecked Sendable conformance).
+        // swiftlint:disable no_any_protocol_existential
         /// Computation failed with error.
         case failed(any Swift.Error)
+        // swiftlint:enable no_any_protocol_existential
     }
 }

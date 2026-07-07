@@ -9,20 +9,20 @@
 //
 // ===----------------------------------------------------------------------===//
 
-public import Array_Primitives
 public import Array_Primitive
+public import Array_Primitives
 public import Async_Primitives
 public import Async_Waiter_Primitives
-internal import Ownership_Primitives
-public import Column_Primitives
-public import Buffer_Ring_Primitive
 public import Buffer_Linear_Primitive
-public import Queue_Primitives
-public import Storage_Contiguous_Primitives
-public import Memory_Heap_Primitives
-public import Memory_Allocator_Primitive
 public import Buffer_Primitive
+public import Buffer_Ring_Primitive
+public import Column_Primitives
+public import Memory_Allocator_Primitive
+public import Memory_Heap_Primitives
+internal import Ownership_Primitives
+public import Queue_Primitives
 public import Standard_Library_Extensions
+public import Storage_Contiguous_Primitives
 
 /// A compute-once cache with in-flight coordination.
 ///
@@ -123,34 +123,38 @@ extension Cache {
     ///           `Cache.Error.cancelled` if cancelled while waiting.
     public func value(
         for key: Key,
+        // reason: structural bottom-out — the compute closure's error type
+        // is not generic on Cache; it is boxed into Cache.Error.computeFailed
+        // (any Swift.Error). Typing this closure would need a generic-error
+        // redesign of the whole Cache/Action/Entry.State chain.
+        // swiftlint:disable:next typed_throws_required
         compute: @Sendable () async throws -> Value
-    ) async throws(Cache.Error) -> Value {
+    ) async throws(Self.Error) -> Value {
         // Phase 1: Check state under lock, determine action
         let action = _storage.withLock { state -> Action in
-            if let entry = state.entries[key] {
-                switch entry.state {
-                case .ready(let value):
-                    // Already cached - return immediately
-                    return .returnValue(value)
-
-                case .failed(let error):
-                    // Previous computation failed - propagate error
-                    return .throwError(error)
-
-                case .computing:
-                    // Computation in progress - become a waiter
-                    return .wait(key, entry)
-
-                case .empty:
-                    // Entry exists but empty - become the producer
-                    entry.state = .computing(Entry.Waiters())
-                    return .compute(key, entry)
-                }
-            } else {
+            guard let entry = state.entries[key] else {
                 // No entry - create one and become the producer
                 let entry = Entry()
                 entry.state = .computing(Entry.Waiters())
                 state.entries[key] = entry
+                return .compute(key, entry)
+            }
+            switch entry.state {
+            case .ready(let value):
+                // Already cached - return immediately
+                return .returnValue(value)
+
+            case .failed(let error):
+                // Previous computation failed - propagate error
+                return .throwError(error)
+
+            case .computing:
+                // Computation in progress - become a waiter
+                return .wait(key, entry)
+
+            case .empty:
+                // Entry exists but empty - become the producer
+                entry.state = .computing(Entry.Waiters())
                 return .compute(key, entry)
             }
         }
@@ -180,7 +184,7 @@ extension Cache {
     /// Suspends the current task until the producer completes.
     /// Supports cancellation via `Async.Waiter.Flag`.
     @usableFromInline
-    func waitForValue(entry: Entry) async throws(Cache.Error) -> Value {
+    func waitForValue(entry: Entry) async throws(Self.Error) -> Value {
         let flag = Async.Waiter.Flag()
 
         let outcome: Entry.Waiters.Outcome
@@ -237,6 +241,7 @@ extension Cache {
         switch outcome {
         case .success(let value):
             return value
+
         case .failure(let error):
             throw .computeFailed(error)
         }
@@ -254,10 +259,18 @@ extension Cache {
     func computeAndPublish(
         key: Key,
         entry: Entry,
+        // reason: structural bottom-out — the compute closure's error type
+        // is not generic on Cache; it is boxed into Cache.Error.computeFailed
+        // (any Swift.Error). Typing this closure would need a generic-error
+        // redesign of the whole Cache/Action/Entry.State chain.
+        // swiftlint:disable:next typed_throws_required
         compute: @Sendable () async throws -> Value
-    ) async throws(Cache.Error) -> Value {
+    ) async throws(Self.Error) -> Value {
         // Run computation outside lock
+        // reason: structural bottom-out — mirrors Cache.Error.computeFailed.
+        // swiftlint:disable no_any_protocol_existential
         let result: Result<Value, any Swift.Error>
+        // swiftlint:enable no_any_protocol_existential
         do {
             let value = try await compute()
             result = .success(value)
@@ -277,6 +290,7 @@ extension Cache {
             switch result {
             case .success(let value):
                 entry.state = .ready(value)
+
             case .failure(let error):
                 entry.state = .failed(error)
             }
@@ -299,6 +313,7 @@ extension Cache {
         switch result {
         case .success(let value):
             return value
+
         case .failure(let error):
             throw Error.computeFailed(error)
         }
@@ -469,8 +484,13 @@ extension Cache {
     public func value(
         for key: Key,
         if shouldCompute: Bool,
+        // reason: structural bottom-out — the compute closure's error type
+        // is not generic on Cache; it is boxed into Cache.Error.computeFailed
+        // (any Swift.Error). Typing this closure would need a generic-error
+        // redesign of the whole Cache/Action/Entry.State chain.
+        // swiftlint:disable:next typed_throws_required
         compute: @Sendable () async throws -> Value
-    ) async throws(Cache.Error) -> Value? {
+    ) async throws(Self.Error) -> Value? {
         // Quick check for cached value
         if let cached = cachedValue(for: key) {
             return cached

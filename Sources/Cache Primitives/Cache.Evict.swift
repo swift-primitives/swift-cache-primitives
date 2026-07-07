@@ -39,8 +39,13 @@ extension Cache {
     ///   `Experiments/cache-effect-type-nesting/` for 8 approaches tested
     ///   (Swift 6.2.4) and why this workaround is necessary.
     public struct Evict: Effect.`Protocol`, Sendable {
+        /// The effect's argument type: the evicted key, value, and reason.
         public typealias Arguments = (key: Key, value: _Value, reason: Reason)
+
+        /// The effect's produced value type — none; eviction is fire-and-forget.
         public typealias Value = Void
+
+        /// The effect's failure type — none; eviction cannot fail.
         public typealias Failure = Never
 
         /// The key that was evicted.
