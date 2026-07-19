@@ -151,4 +151,38 @@ struct Tests {
         _ = await producer.value
         _ = await waiter.value
     }
+
+    // MARK: F-001 - Failed computations must not poison later attempts
+
+    @Test
+    func `a failed computation does not poison the next request`() async throws {
+        struct ComputeError: Swift.Error, Equatable {
+            let code: Int
+        }
+
+        let cache = Cache<String, Int>()
+
+        // First attempt fails; the caller receives the compute error.
+        do {
+            _ = try await cache.value(for: "flaky") { throw ComputeError(code: 7) }
+            Issue.record("expected the first computation's error to propagate")
+        } catch {
+            guard case .computeFailed(let underlying) = error,
+                let computeError = underlying as? ComputeError
+            else {
+                Issue.record("expected .computeFailed(ComputeError), got \(error)")
+                return
+            }
+            #expect(computeError == ComputeError(code: 7))
+        }
+
+        // The failure must not be cached: per the README's non-poisoning
+        // promise ("a failed computation does not poison later attempts"),
+        // the next request for the same key recomputes.
+        let recovered = try await cache.value(for: "flaky") { 42 }
+        #expect(recovered == 42)
+
+        // And the recomputed value is now cached normally.
+        #expect(cache.cachedValue(for: "flaky") == 42)
+    }
 }

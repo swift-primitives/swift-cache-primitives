@@ -151,7 +151,10 @@ extension Cache {
                 return .returnValue(value)
 
             case .failed(let error):
-                // Previous computation failed - propagate error
+                // Defensive: failed entries are removed from the dictionary
+                // at publish time (F-001), so a fresh lookup should never
+                // observe `.failed`. If it somehow does, propagate the error
+                // rather than caching it further.
                 return .throwError(error)
 
             case .computing:
@@ -349,7 +352,7 @@ extension Cache {
 
         // Publish result under lock, collect resumptions
         var resumptions = __Array<Column.Heap<Async.Waiter.Resumption>>(initialCapacity: 0)
-        _storage.withLock { _ in
+        _storage.withLock { state in
             guard case .computing(let waiters) = entry.state else {
                 // State changed unexpectedly - shouldn't happen
                 return
@@ -361,7 +364,17 @@ extension Cache {
                 entry.state = .ready(value)
 
             case .failure(let error):
+                // Deliver the error to the producer and current waiters,
+                // but do NOT cache it: remove the entry so the next
+                // request recomputes (the README's non-poisoning promise,
+                // F-001). The entry object itself still transitions to
+                // `.failed` for any late waiter that captured the entry
+                // reference in phase 1 but has not registered yet - it
+                // raced the failing computation and receives the error.
                 entry.state = .failed(error)
+                if state.entries[key] === entry {
+                    state.entries.removeValue(forKey: key)
+                }
             }
 
             // Collect all waiter resumptions
