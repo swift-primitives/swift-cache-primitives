@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "swift-bounded-cache",
+    name: "swift-cache-primitives",
     platforms: [
         .macOS(.v26),
         .iOS(.v26),
