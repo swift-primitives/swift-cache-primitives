@@ -197,4 +197,99 @@ struct `Cache.Bounded Tests` {
         #expect(cache.getValue(forKey: "a") == 1)
         #expect(cache.getValue(forKey: "b") == 2)
     }
+
+    // MARK: Capacity contract
+
+    @Test
+    func `zero capacity traps`() async {
+        await #expect(processExitsWith: .failure) {
+            _ = Cache<String, Int>.Bounded(capacity: 0)
+        }
+    }
+
+    @Test
+    func `negative capacity traps`() async {
+        await #expect(processExitsWith: .failure) {
+            _ = Cache<String, Int>.Bounded(capacity: -1)
+        }
+    }
+
+    // MARK: Concurrency
+
+    @Test
+    func `concurrent inserts across distinct keys never exceed capacity`() async {
+        let capacity = 8
+        let cache = Cache<Int, Int>.Bounded(capacity: capacity)
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in 0..<16 {
+                group.addTask {
+                    for iteration in 0..<250 {
+                        cache.insert(iteration, forKey: worker * 1000 + iteration)
+                    }
+                }
+            }
+        }
+
+        #expect(cache.count == capacity)
+        #expect(cache.isEmpty == false)
+    }
+
+    @Test
+    func `concurrent mixed reads writes and removals stay consistent`() async {
+        let cache = Cache<Int, Int>.Bounded(capacity: 32)
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in 0..<4 {
+                group.addTask {
+                    for iteration in 0..<500 {
+                        cache.insert(worker, forKey: iteration % 64)
+                    }
+                }
+            }
+            for _ in 0..<4 {
+                group.addTask {
+                    for iteration in 0..<500 {
+                        if let value = cache.getValue(forKey: iteration % 64) {
+                            precondition(
+                                (0..<4).contains(value),
+                                "a read must observe a value some writer inserted"
+                            )
+                        }
+                    }
+                }
+            }
+            for _ in 0..<2 {
+                group.addTask {
+                    for iteration in 0..<500 {
+                        cache.removeValue(forKey: iteration % 64)
+                    }
+                }
+            }
+        }
+
+        #expect(cache.count <= 32)
+    }
+
+    @Test
+    func `concurrent replacement of one key under contention keeps a single entry`() async {
+        let cache = Cache<String, Int>.Bounded(capacity: 4)
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in 0..<8 {
+                group.addTask {
+                    for _ in 0..<500 {
+                        cache.insert(worker, forKey: "contended")
+                    }
+                }
+            }
+        }
+
+        #expect(cache.count == 1)
+        let survivor = cache.getValue(forKey: "contended")
+        #expect(survivor != nil)
+        if let survivor {
+            #expect((0..<8).contains(survivor))
+        }
+    }
 }
