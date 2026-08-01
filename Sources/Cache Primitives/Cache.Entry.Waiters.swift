@@ -31,7 +31,7 @@ extension Cache.Entry {
     /// ## Non-Goals
     ///
     /// - Not independently thread-safe.
-    final class Waiters: @unsafe @unchecked Sendable {
+    final class Waiters: @unchecked Sendable {
         @usableFromInline
         var queue: Async.Waiter.Queue.Unbounded<Outcome, Void>
 

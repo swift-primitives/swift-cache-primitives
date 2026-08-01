@@ -25,7 +25,9 @@ import Testing
 private actor Gate {
     private var isOpen = false
     private var continuations: [CheckedContinuation<Void, Never>] = []
+}
 
+extension Gate {
     func open() {
         guard !isOpen else { return }
         isOpen = true
@@ -49,12 +51,14 @@ private actor Gate {
 /// hanging it (the direct await would deadlock: the waiter cannot resume
 /// until the producer publishes, and the producer is parked until teardown).
 private actor Outcome<Value: Sendable> {
+    private var terminal: Terminal?
+}
+
+extension Outcome {
     enum Terminal {
         case succeeded(Value)
         case threw(any Swift.Error)
     }
-
-    private var terminal: Terminal?
 
     func record(_ outcome: Terminal) {
         terminal = outcome
@@ -69,6 +73,9 @@ private actor Outcome<Value: Sendable> {
 /// `@Suite` carve-out per [INST-TEST-013]).
 @Suite("Cache")
 struct Tests {
+    @Suite struct Unit {}
+    @Suite struct `Edge Case` {}
+    @Suite struct Integration {}
 
     // MARK: F-002 - Waiter cancellation must not wait for publish
 
@@ -83,10 +90,14 @@ struct Tests {
         // the test explicitly releases it at teardown - simulating a
         // compute closure that hangs.
         let producer = Task {
-            try? await cache.value(for: "stuck") {
-                await producerStarted.open()
-                await releaseProducer.wait()
-                return 0
+            do throws(Cache<String, Int>.Error) {
+                _ = try await cache.value(for: "stuck") {
+                    await producerStarted.open()
+                    await releaseProducer.wait()
+                    return 0
+                }
+            } catch {
+                // Discarded: this producer's own error path isn't under test here.
             }
         }
 
@@ -96,7 +107,7 @@ struct Tests {
         // is already `.computing`). It records its outcome the moment it
         // resumes.
         let waiter = Task {
-            do {
+            do throws(Cache<String, Int>.Error) {
                 let value = try await cache.value(for: "stuck") { 0 }
                 await waiterOutcome.record(.succeeded(value))
             } catch {
@@ -107,6 +118,8 @@ struct Tests {
         // Give the waiter task time to register itself in the entry's
         // waiter queue before cancelling (mirrors the cancellation-test
         // idiom used for `Async.Semaphore.wait()`).
+        // swift-linter:disable:next try optional
+        // REASON: Task.sleep(for:) throws untyped (CancellationError); test intentionally discards a cancellation signal here.
         try? await Task.sleep(for: .milliseconds(50))
         waiter.cancel()
 
@@ -121,6 +134,8 @@ struct Tests {
                 observed = terminal
                 break
             }
+            // swift-linter:disable:next try optional
+            // REASON: Task.sleep(for:) throws untyped (CancellationError); test intentionally discards a cancellation signal here.
             try? await Task.sleep(for: .milliseconds(25))
         }
 
@@ -156,24 +171,24 @@ struct Tests {
 
     @Test
     func `a failed computation does not poison the next request`() async throws {
-        struct ComputeError: Swift.Error, Equatable {
+        struct Fault: Swift.Error, Equatable {
             let code: Int
         }
 
         let cache = Cache<String, Int>()
 
         // First attempt fails; the caller receives the compute error.
-        do {
-            _ = try await cache.value(for: "flaky") { throw ComputeError(code: 7) }
+        do throws(Cache<String, Int>.Error) {
+            _ = try await cache.value(for: "flaky") { throw Fault(code: 7) }
             Issue.record("expected the first computation's error to propagate")
         } catch {
             guard case .computeFailed(let underlying) = error,
-                let computeError = underlying as? ComputeError
+                let computeError = underlying as? Fault
             else {
-                Issue.record("expected .computeFailed(ComputeError), got \(error)")
+                Issue.record("expected .computeFailed(Fault), got \(error)")
                 return
             }
-            #expect(computeError == ComputeError(code: 7))
+            #expect(computeError == Fault(code: 7))
         }
 
         // The failure must not be cached: per the README's non-poisoning

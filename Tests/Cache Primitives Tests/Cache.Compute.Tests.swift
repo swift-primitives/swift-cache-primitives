@@ -15,7 +15,7 @@ import Testing
 
 // MARK: - Test Error
 
-private struct TestError: Swift.Error, Sendable, Equatable {
+private struct Fault: Swift.Error, Sendable, Equatable {
     let code: Int
 }
 
@@ -23,10 +23,13 @@ private struct TestError: Swift.Error, Sendable, Equatable {
 
 @Suite
 struct `Cache.Compute Tests` {
+    @Suite struct Unit {}
+    @Suite struct `Edge Case` {}
+    @Suite struct Integration {}
 
     @Test
     func `effect stores key as arguments`() {
-        let effect = Cache<String, Int>.Compute<TestError>(key: "test-key")
+        let effect = Cache<String, Int>.Compute<Fault>(key: "test-key")
 
         #expect(effect.key == "test-key")
         #expect(effect.arguments == "test-key")
@@ -34,29 +37,29 @@ struct `Cache.Compute Tests` {
 
     @Test
     func `effect with different key types`() {
-        let stringEffect = Cache<String, Int>.Compute<TestError>(key: "key")
+        let stringEffect = Cache<String, Int>.Compute<Fault>(key: "key")
         #expect(stringEffect.key == "key")
 
-        let intEffect = Cache<Int, String>.Compute<TestError>(key: 42)
+        let intEffect = Cache<Int, String>.Compute<Fault>(key: 42)
         #expect(intEffect.key == 42)
 
-        struct CustomKey: Hashable, Sendable {
+        struct Tag: Hashable, Sendable {
             let id: Int
             let name: String
         }
-        let customEffect = Cache<CustomKey, Bool>.Compute<TestError>(
-            key: CustomKey(id: 1, name: "test")
+        let customEffect = Cache<Tag, Bool>.Compute<Fault>(
+            key: Tag(id: 1, name: "test")
         )
-        #expect(customEffect.key == CustomKey(id: 1, name: "test"))
+        #expect(customEffect.key == Tag(id: 1, name: "test"))
     }
 
     @Test
     func `effect conforms to Effect.Protocol`() {
-        let effect = Cache<String, Int>.Compute<TestError>(key: "key")
+        let effect = Cache<String, Int>.Compute<Fault>(key: "key")
 
         // Verify associated types
         let _: String = effect.arguments
-        let _: Cache<String, Int>.Compute<TestError>.Value.Type = Int.self
-        let _: Cache<String, Int>.Compute<TestError>.Failure.Type = TestError.self
+        let _: Cache<String, Int>.Compute<Fault>.Value.Type = Int.self
+        let _: Cache<String, Int>.Compute<Fault>.Failure.Type = Fault.self
     }
 }

@@ -48,20 +48,8 @@ extension Cache {
     ///   `Experiments/cache-effect-type-nesting/` for 8 approaches tested
     ///   (Swift 6.2.4) and why this workaround is necessary.
     public struct Compute<E: Swift.Error>: Effect.`Protocol` {
-        /// The effect's argument type: the cache key to compute a value for.
-        public typealias Arguments = Key
-
-        /// The effect's produced value type.
-        public typealias Value = _Value
-
-        /// The effect's failure type.
-        public typealias Failure = E
-
         /// The key for which to compute a value.
         public let key: Key
-
-        /// The arguments for this effect (the key).
-        public var arguments: Key { key }
 
         /// Creates a compute effect for the given key.
         ///
@@ -71,4 +59,18 @@ extension Cache {
             self.key = key
         }
     }
+}
+
+extension Cache.Compute {
+    /// The effect's argument type: the cache key to compute a value for.
+    public typealias Arguments = Key
+
+    /// The effect's produced value type.
+    public typealias Value = Cache._Value
+
+    /// The effect's failure type.
+    public typealias Failure = E
+
+    /// The arguments for this effect (the key).
+    public var arguments: Key { key }
 }

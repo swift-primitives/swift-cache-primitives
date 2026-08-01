@@ -77,22 +77,4 @@ extension Cache.Evict {
     public var arguments: (key: Key, value: Cache._Value, reason: Reason) {
         (key, value, reason)
     }
-
-    /// The reason a cache entry was evicted.
-    public enum Reason: Sendable, Equatable {
-        /// Entry was explicitly removed via `removeValue(for:)`.
-        case explicit
-
-        /// Entry was removed due to capacity constraints.
-        case capacityLimit
-
-        /// Entry expired based on TTL policy.
-        case expired
-
-        /// Entry was replaced by a new value.
-        case replaced
-
-        /// Cache was cleared via `removeAll()`.
-        case cleared
-    }
 }

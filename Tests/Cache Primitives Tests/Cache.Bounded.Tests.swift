@@ -17,6 +17,9 @@ import Testing
 
 @Suite
 struct `Cache.Bounded Tests` {
+    @Suite struct Unit {}
+    @Suite struct `Edge Case` {}
+    @Suite struct Integration {}
 
     // MARK: Insert / get
 
@@ -56,7 +59,7 @@ struct `Cache.Bounded Tests` {
     @Test
     func `count never exceeds capacity`() {
         let cache = Cache<Int, Int>.Bounded(capacity: 3)
-        for i in 0..<10 {
+        (0..<10).forEach { i in
             cache.insert(i, forKey: i)
             #expect(cache.count <= 3)
         }
@@ -222,9 +225,9 @@ struct `Cache.Bounded Tests` {
         let cache = Cache<Int, Int>.Bounded(capacity: capacity)
 
         await withTaskGroup(of: Void.self) { group in
-            for worker in 0..<16 {
+            (0..<16).forEach { worker in
                 group.addTask {
-                    for iteration in 0..<250 {
+                    (0..<250).forEach { iteration in
                         cache.insert(iteration, forKey: worker * 1000 + iteration)
                     }
                 }
@@ -240,16 +243,16 @@ struct `Cache.Bounded Tests` {
         let cache = Cache<Int, Int>.Bounded(capacity: 32)
 
         await withTaskGroup(of: Void.self) { group in
-            for worker in 0..<4 {
+            (0..<4).forEach { worker in
                 group.addTask {
-                    for iteration in 0..<500 {
+                    (0..<500).forEach { iteration in
                         cache.insert(worker, forKey: iteration % 64)
                     }
                 }
             }
-            for _ in 0..<4 {
+            (0..<4).forEach { _ in
                 group.addTask {
-                    for iteration in 0..<500 {
+                    (0..<500).forEach { iteration in
                         if let value = cache.getValue(forKey: iteration % 64) {
                             precondition(
                                 (0..<4).contains(value),
@@ -259,9 +262,9 @@ struct `Cache.Bounded Tests` {
                     }
                 }
             }
-            for _ in 0..<2 {
+            (0..<2).forEach { _ in
                 group.addTask {
-                    for iteration in 0..<500 {
+                    (0..<500).forEach { iteration in
                         cache.removeValue(forKey: iteration % 64)
                     }
                 }
@@ -276,9 +279,9 @@ struct `Cache.Bounded Tests` {
         let cache = Cache<String, Int>.Bounded(capacity: 4)
 
         await withTaskGroup(of: Void.self) { group in
-            for worker in 0..<8 {
+            (0..<8).forEach { worker in
                 group.addTask {
-                    for _ in 0..<500 {
+                    (0..<500).forEach { _ in
                         cache.insert(worker, forKey: "contended")
                     }
                 }

@@ -17,6 +17,9 @@ import Testing
 
 @Suite
 struct `Cache.Evict Tests` {
+    @Suite struct Unit {}
+    @Suite struct `Edge Case` {}
+    @Suite struct Integration {}
 
     @Test
     func `effect stores key, value, and reason`() {

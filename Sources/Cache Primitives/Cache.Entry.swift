@@ -26,7 +26,7 @@ extension Cache {
     /// ## Non-Goals
     ///
     /// - Not independently thread-safe; requires cache mutex.
-    final class Entry: @unsafe @unchecked Sendable {
+    final class Entry: @unchecked Sendable {
         @usableFromInline
         var state: State
 
