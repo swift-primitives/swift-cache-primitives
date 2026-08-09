@@ -77,6 +77,7 @@ let package = Package(
             dependencies: [
                 "Cache Primitives",
                 "Cache Primitives Test Support",
+                .product(name: "Async Primitives", package: "swift-async-primitives"),
             ]
         ),
     ],
