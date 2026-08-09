@@ -9,10 +9,10 @@
 //
 // ===----------------------------------------------------------------------===//
 
-import Testing
-
 import Async_Primitives
 import Synchronization
+import Testing
+
 @testable import Cache_Primitives
 
 // MARK: - Test Support
@@ -101,48 +101,48 @@ struct Tests {
     }
 
     #if DEBUG
-    @Test
-    func `two expired readers preserve and join a replacement computation`() async throws {
-        let cache = Cache<String, Int>()
-        let producerStarted = Async.Gate()
-        let releaseProducer = Async.Gate()
-        let waiterEnqueued = Async.Gate()
-        cache.setValue(0, for: "record")
+        @Test
+        func `two expired readers preserve and join a replacement computation`() async throws {
+            let cache = Cache<String, Int>()
+            let producerStarted = Async.Gate()
+            let releaseProducer = Async.Gate()
+            let waiterEnqueued = Async.Gate()
+            cache.setValue(0, for: "record")
 
-        // The first expired reader atomically removes the stale ready value.
-        let firstRemoval = cache.removeValue(for: "record") { $0 == 0 }
-        #expect(firstRemoval == 0)
+            // The first expired reader atomically removes the stale ready value.
+            let firstRemoval = cache.removeValue(for: "record") { $0 == 0 }
+            #expect(firstRemoval == 0)
 
-        // A replacement begins and remains in flight while the second expired
-        // reader attempts its own conditional removal.
-        let producer = Task {
-            try await cache.value(for: "record") {
-                _ = producerStarted.open()
-                await releaseProducer.wait()
-                return 42
+            // A replacement begins and remains in flight while the second expired
+            // reader attempts its own conditional removal.
+            let producer = Task {
+                try await cache.value(for: "record") {
+                    _ = producerStarted.open()
+                    await releaseProducer.wait()
+                    return 42
+                }
             }
+            await producerStarted.wait()
+
+            let secondRemoval = cache.removeValue(for: "record") { _ in true }
+            #expect(secondRemoval == nil)
+
+            // The public cache surface deliberately does not expose entry state.
+            // This debug-only hook acknowledges the exact enqueue event, so the
+            // release below cannot race a scheduler-polling budget.
+            cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
+            let waiter = Task {
+                try await cache.value(for: "record") { -1 }
+            }
+            await waiterEnqueued.wait()
+            #expect(Self.isComputing(in: cache, for: "record"))
+
+            _ = releaseProducer.open()
+
+            #expect(try await producer.value == 42)
+            #expect(try await waiter.value == 42)
+            #expect(cache.cachedValue(for: "record") == 42)
         }
-        await producerStarted.wait()
-
-        let secondRemoval = cache.removeValue(for: "record") { _ in true }
-        #expect(secondRemoval == nil)
-
-        // The public cache surface deliberately does not expose entry state.
-        // This debug-only hook acknowledges the exact enqueue event, so the
-        // release below cannot race a scheduler-polling budget.
-        cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
-        let waiter = Task {
-            try await cache.value(for: "record") { -1 }
-        }
-        await waiterEnqueued.wait()
-        #expect(Self.isComputing(in: cache, for: "record"))
-
-        _ = releaseProducer.open()
-
-        #expect(try await producer.value == 42)
-        #expect(try await waiter.value == 42)
-        #expect(cache.cachedValue(for: "record") == 42)
-    }
     #endif
 
     #if DEBUG
@@ -150,82 +150,82 @@ struct Tests {
 
         @Test
         func `cancelling a waiter while compute is stuck resumes it promptly`() async throws {
-        let cache = Cache<String, Int>()
-        let producerStarted = Async.Gate()
-        let releaseProducer = Async.Gate()
-        let waiterOutcome = Outcome<Int>()
-        let waiterEnqueued = Async.Gate()
-        let waiterCompleted = Async.Gate()
+            let cache = Cache<String, Int>()
+            let producerStarted = Async.Gate()
+            let releaseProducer = Async.Gate()
+            let waiterOutcome = Outcome<Int>()
+            let waiterEnqueued = Async.Gate()
+            let waiterCompleted = Async.Gate()
 
-        // The producer becomes the "computing" party and then parks until
-        // the test explicitly releases it at teardown - simulating a
-        // compute closure that hangs.
-        let producer = Task {
-            do throws(Cache<String, Int>.Error) {
-                _ = try await cache.value(for: "stuck") {
-                    _ = producerStarted.open()
-                    await releaseProducer.wait()
-                    return 0
+            // The producer becomes the "computing" party and then parks until
+            // the test explicitly releases it at teardown - simulating a
+            // compute closure that hangs.
+            let producer = Task {
+                do throws(Cache<String, Int>.Error) {
+                    _ = try await cache.value(for: "stuck") {
+                        _ = producerStarted.open()
+                        await releaseProducer.wait()
+                        return 0
+                    }
+                } catch {
+                    // Discarded: this producer's own error path isn't under test here.
                 }
-            } catch {
-                // Discarded: this producer's own error path isn't under test here.
             }
-        }
 
-        await producerStarted.wait()
+            await producerStarted.wait()
 
-        // This second request for the same key becomes a waiter (the entry
-        // is already `.computing`). It records its outcome the moment it
-        // resumes.
-        cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
-        let waiter = Task {
-            let outcome: Outcome<Int>.Terminal
-            do throws(Cache<String, Int>.Error) {
-                let value = try await cache.value(for: "stuck") { 0 }
-                outcome = .succeeded(value)
-            } catch {
-                outcome = .threw(error)
-            }
-            await waiterOutcome.record(outcome)
-            _ = waiterCompleted.open()
-        }
-
-        await waiterEnqueued.wait()
-        #expect(Self.isComputing(in: cache, for: "stuck"))
-
-        waiter.cancel()
-
-        // The waiter opens this gate only after recording its terminal result.
-        // This is a causal cancellation/resumption acknowledgement, not a
-        // scheduler or wall-clock polling budget.
-        await waiterCompleted.wait()
-        let observed = await waiterOutcome.value
-
-        switch observed {
-        case .threw(let error):
-            if let cacheError = error as? Cache<String, Int>.Error {
-                guard case .cancelled = cacheError else {
-                    Issue.record("expected .cancelled, got \(cacheError)")
-                    break
+            // This second request for the same key becomes a waiter (the entry
+            // is already `.computing`). It records its outcome the moment it
+            // resumes.
+            cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
+            let waiter = Task {
+                let outcome: Outcome<Int>.Terminal
+                do throws(Cache<String, Int>.Error) {
+                    let value = try await cache.value(for: "stuck") { 0 }
+                    outcome = .succeeded(value)
+                } catch {
+                    outcome = .threw(error)
                 }
-            } else {
-                Issue.record("expected a Cache.Error, got \(type(of: error)): \(error)")
+                await waiterOutcome.record(outcome)
+                _ = waiterCompleted.open()
             }
 
-        case .succeeded(let value):
-            Issue.record(
-                "expected cancellation to resume the waiter with .cancelled, but it succeeded with \(value)"
-            )
+            await waiterEnqueued.wait()
+            #expect(Self.isComputing(in: cache, for: "stuck"))
 
-        case nil:
-            Issue.record("waiter completed without recording a terminal result")
+            waiter.cancel()
+
+            // The waiter opens this gate only after recording its terminal result.
+            // This is a causal cancellation/resumption acknowledgement, not a
+            // scheduler or wall-clock polling budget.
+            await waiterCompleted.wait()
+            let observed = await waiterOutcome.value
+
+            switch observed {
+            case .threw(let error):
+                if let cacheError = error as? Cache<String, Int>.Error {
+                    guard case .cancelled = cacheError else {
+                        Issue.record("expected .cancelled, got \(cacheError)")
+                        break
+                    }
+                } else {
+                    Issue.record("expected a Cache.Error, got \(type(of: error)): \(error)")
+                }
+
+            case .succeeded(let value):
+                Issue.record(
+                    "expected cancellation to resume the waiter with .cancelled, but it succeeded with \(value)"
+                )
+
+            case nil:
+                Issue.record("waiter completed without recording a terminal result")
+            }
+
+            // Teardown: release the parked producer and let both tasks finish.
+            _ = releaseProducer.open()
+            _ = await producer.value
+            _ = await waiter.value
         }
-
-        // Teardown: release the parked producer and let both tasks finish.
-        _ = releaseProducer.open()
-        _ = await producer.value
-        _ = await waiter.value
-    }
     #endif
 
     // MARK: F-001 - Failed computations must not poison later attempts
