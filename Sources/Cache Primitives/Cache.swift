@@ -24,6 +24,10 @@ public import Queue_Primitives
 public import Standard_Library_Extensions
 public import Storage_Contiguous_Primitives
 
+#if DEBUG
+    internal import Synchronization
+#endif
+
 /// A compute-once cache with in-flight coordination.
 ///
 /// `Cache` provides efficient key-based caching where:
@@ -251,8 +255,15 @@ extension Cache {
                         }
                     }
 
-                    // Resume outside lock if needed
-                    resumption?.resume()
+                    // Resume outside lock if needed.
+                    if let resumption {
+                        resumption.resume()
+                    } else {
+                        #if DEBUG
+                            let waiterEnqueued = _storage.testing.waiterEnqueued.withLock { $0 }
+                            waiterEnqueued?()
+                        #endif
+                    }
                 }
             } onCancel: {
                 // Set the flag, then remove this waiter from the queue and
@@ -490,19 +501,16 @@ extension Cache {
 
     /// Removes the current cached value when a condition accepts it.
     ///
-    /// The condition is evaluated while the cache's lock is held, so its
-    /// decision and the removal apply to the same ready entry. An entry with
-    /// an in-progress computation is never passed to `condition` and is never
-    /// removed or cancelled by this operation.
-    ///
-    /// `condition` must be synchronous, brief, and non-reentrant: do not
-    /// call this cache, wait for work, or perform effects that can acquire the
-    /// cache's lock from within it.
+    /// The condition is evaluated outside the cache lock. If it accepts the
+    /// captured ready value, removal proceeds only when the dictionary still
+    /// contains that identical ready entry. An entry with an in-progress
+    /// computation is never passed to `condition` and is never removed or
+    /// cancelled by this operation.
     ///
     /// - Parameters:
     ///   - key: The key whose ready value to inspect.
-    ///   - condition: A synchronous condition evaluated only for the current
-    ///     ready value while the cache lock is held.
+    ///   - condition: A synchronous condition evaluated only for a captured
+    ///     ready value, outside the cache lock.
     /// - Returns: The removed value when `condition` accepts the current ready
     ///   entry; otherwise, `nil`.
     @discardableResult
@@ -511,10 +519,24 @@ extension Cache {
         for key: Key,
         when condition: @Sendable (Value) -> Bool
     ) -> Value? {
-        _storage.withLock { state in
+        let captured = _storage.withLock { state -> (Entry, Value)? in
             guard let entry = state.entries[key],
-                case .ready(let value) = entry.state,
-                condition(value)
+                case .ready(let value) = entry.state
+            else {
+                return nil
+            }
+
+            return (entry, value)
+        }
+
+        guard let (entry, value) = captured, condition(value) else {
+            return nil
+        }
+
+        return _storage.withLock { state in
+            guard let current = state.entries[key],
+                current === entry,
+                case .ready = current.state
             else {
                 return nil
             }

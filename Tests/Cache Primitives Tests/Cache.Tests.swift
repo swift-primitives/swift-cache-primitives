@@ -11,38 +11,11 @@
 
 import Testing
 
+import Async_Primitives
+import Synchronization
 @testable import Cache_Primitives
-import Queue_Primitives
 
 // MARK: - Test Support
-
-/// A one-shot, awaitable gate for coordinating test tasks.
-///
-/// `wait()` suspends until `open()` is called (from any task); calling
-/// `open()` after the gate is already open is a no-op. Used to make the
-/// producer/waiter interleaving in the cancellation test deterministic
-/// instead of relying on sleep-based guessing for the "producer has started
-/// computing" edge.
-private actor Gate {
-    private var isOpen = false
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-}
-
-extension Gate {
-    func open() {
-        guard !isOpen else { return }
-        isOpen = true
-        for continuation in continuations {
-            continuation.resume()
-        }
-        continuations.removeAll()
-    }
-
-    func wait() async {
-        if isOpen { return }
-        await withCheckedContinuation { continuations.append($0) }
-    }
-}
 
 /// A box recording a task's terminal outcome, pollable from the test body.
 ///
@@ -78,32 +51,21 @@ struct Tests {
     @Suite struct `Edge Case` {}
     @Suite struct Integration {}
 
-    private static func hasWaiter(
-        in cache: Cache<String, Int>,
-        for key: String
-    ) -> Bool {
-        cache._storage.withLock { state in
-            guard let entry = state.entries[key],
-                case .computing(let waiters) = entry.state
-            else {
-                return false
-            }
-            return !waiters.queue.isEmpty
-        }
-    }
-
-    private static func waitForWaiter(
-        in cache: Cache<String, Int>,
-        for key: String
-    ) async -> Bool {
-        for _ in 0..<1_000 {
-            if hasWaiter(in: cache, for: key) {
+    #if DEBUG
+        private static func isComputing(
+            in cache: Cache<String, Int>,
+            for key: String
+        ) -> Bool {
+            cache._storage.withLock { state in
+                guard let entry = state.entries[key],
+                    case .computing = entry.state
+                else {
+                    return false
+                }
                 return true
             }
-            await Task.yield()
         }
-        return false
-    }
+    #endif
 
     @Test
     func `false conditional removal preserves a ready value`() {
@@ -128,10 +90,25 @@ struct Tests {
     }
 
     @Test
+    func `a conditional removal predicate can read the same cache`() {
+        let cache = Cache<String, Int>()
+        cache.setValue(42, for: "answer")
+
+        let removed = cache.removeValue(for: "answer") { value in
+            cache.cachedValue(for: "answer") == value
+        }
+
+        #expect(removed == 42)
+        #expect(cache.cachedValue(for: "answer") == nil)
+    }
+
+    #if DEBUG
+    @Test
     func `two expired readers preserve and join a replacement computation`() async throws {
         let cache = Cache<String, Int>()
-        let producerStarted = Gate()
-        let releaseProducer = Gate()
+        let producerStarted = Async.Gate()
+        let releaseProducer = Async.Gate()
+        let waiterEnqueued = Async.Gate()
         cache.setValue(0, for: "record")
 
         // The first expired reader atomically removes the stale ready value.
@@ -142,7 +119,7 @@ struct Tests {
         // reader attempts its own conditional removal.
         let producer = Task {
             try await cache.value(for: "record") {
-                await producerStarted.open()
+                _ = producerStarted.open()
                 await releaseProducer.wait()
                 return 42
             }
@@ -152,29 +129,34 @@ struct Tests {
         let secondRemoval = cache.removeValue(for: "record") { _ in true }
         #expect(secondRemoval == nil)
 
-        // The waiter-registration observation is internal only because the
-        // public cache surface deliberately does not expose entry state. It
-        // makes the producer/waiter interleaving explicit without sleeps.
+        // The public cache surface deliberately does not expose entry state.
+        // This debug-only hook acknowledges the exact enqueue event, so the
+        // release below cannot race a scheduler-polling budget.
+        cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
         let waiter = Task {
             try await cache.value(for: "record") { -1 }
         }
-        #expect(await Self.waitForWaiter(in: cache, for: "record"))
+        await waiterEnqueued.wait()
+        #expect(Self.isComputing(in: cache, for: "record"))
 
-        await releaseProducer.open()
+        _ = releaseProducer.open()
 
         #expect(try await producer.value == 42)
         #expect(try await waiter.value == 42)
         #expect(cache.cachedValue(for: "record") == 42)
     }
+    #endif
 
-    // MARK: F-002 - Waiter cancellation must not wait for publish
+    #if DEBUG
+        // MARK: F-002 - Waiter cancellation must not wait for publish
 
-    @Test
-    func `cancelling a waiter while compute is stuck resumes it promptly`() async throws {
+        @Test
+        func `cancelling a waiter while compute is stuck resumes it promptly`() async throws {
         let cache = Cache<String, Int>()
-        let producerStarted = Gate()
-        let releaseProducer = Gate()
+        let producerStarted = Async.Gate()
+        let releaseProducer = Async.Gate()
         let waiterOutcome = Outcome<Int>()
+        let waiterEnqueued = Async.Gate()
 
         // The producer becomes the "computing" party and then parks until
         // the test explicitly releases it at teardown - simulating a
@@ -182,7 +164,7 @@ struct Tests {
         let producer = Task {
             do throws(Cache<String, Int>.Error) {
                 _ = try await cache.value(for: "stuck") {
-                    await producerStarted.open()
+                    _ = producerStarted.open()
                     await releaseProducer.wait()
                     return 0
                 }
@@ -196,6 +178,7 @@ struct Tests {
         // This second request for the same key becomes a waiter (the entry
         // is already `.computing`). It records its outcome the moment it
         // resumes.
+        cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
         let waiter = Task {
             do throws(Cache<String, Int>.Error) {
                 let value = try await cache.value(for: "stuck") { 0 }
@@ -205,12 +188,9 @@ struct Tests {
             }
         }
 
-        // Give the waiter task time to register itself in the entry's
-        // waiter queue before cancelling (mirrors the cancellation-test
-        // idiom used for `Async.Semaphore.wait()`).
-        // swift-linter:disable:next try optional
-        // REASON: Task.sleep(for:) throws untyped (CancellationError); test intentionally discards a cancellation signal here.
-        try? await Task.sleep(for: .milliseconds(50))
+        await waiterEnqueued.wait()
+        #expect(Self.isComputing(in: cache, for: "stuck"))
+
         waiter.cancel()
 
         // Poll for the waiter's resumption with a bounded deadline
@@ -252,10 +232,11 @@ struct Tests {
         }
 
         // Teardown: release the parked producer and let both tasks finish.
-        await releaseProducer.open()
+        _ = releaseProducer.open()
         _ = await producer.value
         _ = await waiter.value
     }
+    #endif
 
     // MARK: F-001 - Failed computations must not poison later attempts
 
