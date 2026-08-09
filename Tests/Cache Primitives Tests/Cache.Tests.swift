@@ -17,13 +17,11 @@ import Synchronization
 
 // MARK: - Test Support
 
-/// A box recording a task's terminal outcome, pollable from the test body.
+/// A box recording a task's terminal outcome for the test body.
 ///
 /// The waiter task under test writes its outcome here the moment it
-/// resumes; the test polls with a bounded deadline instead of awaiting the
-/// task directly, so a pre-fix stranded waiter fails the test rather than
-/// hanging it (the direct await would deadlock: the waiter cannot resume
-/// until the producer publishes, and the producer is parked until teardown).
+/// resumes. A completion gate then gives the test a causal acknowledgement
+/// before it reads this result.
 private actor Outcome<Value: Sendable> {
     private var terminal: Terminal?
 }
@@ -157,6 +155,7 @@ struct Tests {
         let releaseProducer = Async.Gate()
         let waiterOutcome = Outcome<Int>()
         let waiterEnqueued = Async.Gate()
+        let waiterCompleted = Async.Gate()
 
         // The producer becomes the "computing" party and then parks until
         // the test explicitly releases it at teardown - simulating a
@@ -180,12 +179,15 @@ struct Tests {
         // resumes.
         cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
         let waiter = Task {
+            let outcome: Outcome<Int>.Terminal
             do throws(Cache<String, Int>.Error) {
                 let value = try await cache.value(for: "stuck") { 0 }
-                await waiterOutcome.record(.succeeded(value))
+                outcome = .succeeded(value)
             } catch {
-                await waiterOutcome.record(.threw(error))
+                outcome = .threw(error)
             }
+            await waiterOutcome.record(outcome)
+            _ = waiterCompleted.open()
         }
 
         await waiterEnqueued.wait()
@@ -193,21 +195,11 @@ struct Tests {
 
         waiter.cancel()
 
-        // Poll for the waiter's resumption with a bounded deadline
-        // (~5s). Pre-fix, a cancelled waiter is not resumed until the
-        // producer publishes - which never happens here on its own, since
-        // the producer is parked - so an unfixed build exhausts the
-        // deadline and fails below instead of hanging the suite.
-        var observed: Outcome<Int>.Terminal?
-        for _ in 0..<200 {
-            if let terminal = await waiterOutcome.value {
-                observed = terminal
-                break
-            }
-            // swift-linter:disable:next try optional
-            // REASON: Task.sleep(for:) throws untyped (CancellationError); test intentionally discards a cancellation signal here.
-            try? await Task.sleep(for: .milliseconds(25))
-        }
+        // The waiter opens this gate only after recording its terminal result.
+        // This is a causal cancellation/resumption acknowledgement, not a
+        // scheduler or wall-clock polling budget.
+        await waiterCompleted.wait()
+        let observed = await waiterOutcome.value
 
         switch observed {
         case .threw(let error):
@@ -226,9 +218,7 @@ struct Tests {
             )
 
         case nil:
-            Issue.record(
-                "waiter was not resumed within 5s of cancellation - stranded until publish (F-002)"
-            )
+            Issue.record("waiter completed without recording a terminal result")
         }
 
         // Teardown: release the parked producer and let both tasks finish.
