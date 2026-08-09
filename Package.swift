@@ -38,6 +38,7 @@ let package = Package(
         .package(url: "https://github.com/swift-primitives/swift-index-primitives.git", branch: "main"),
         .package(url: "https://github.com/swift-primitives/swift-time-primitives.git", branch: "main"),
         .package(url: "https://github.com/swift-primitives/swift-collection-primitives.git", branch: "main"),
+        .package(url: "https://github.com/swift-primitives/swift-queue-primitives.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -77,6 +78,7 @@ let package = Package(
             dependencies: [
                 "Cache Primitives",
                 "Cache Primitives Test Support",
+                .product(name: "Queue Primitives", package: "swift-queue-primitives"),
             ]
         ),
     ],

@@ -488,6 +488,42 @@ extension Cache {
         resumptions.drain { $0.resume() }
     }
 
+    /// Removes the current cached value when a condition accepts it.
+    ///
+    /// The condition is evaluated while the cache's lock is held, so its
+    /// decision and the removal apply to the same ready entry. An entry with
+    /// an in-progress computation is never passed to `condition` and is never
+    /// removed or cancelled by this operation.
+    ///
+    /// `condition` must be synchronous, brief, and non-reentrant: do not
+    /// call this cache, wait for work, or perform effects that can acquire the
+    /// cache's lock from within it.
+    ///
+    /// - Parameters:
+    ///   - key: The key whose ready value to inspect.
+    ///   - condition: A synchronous condition evaluated only for the current
+    ///     ready value while the cache lock is held.
+    /// - Returns: The removed value when `condition` accepts the current ready
+    ///   entry; otherwise, `nil`.
+    @discardableResult
+    @inlinable
+    public func removeValue(
+        for key: Key,
+        when condition: @Sendable (Value) -> Bool
+    ) -> Value? {
+        _storage.withLock { state in
+            guard let entry = state.entries[key],
+                case .ready(let value) = entry.state,
+                condition(value)
+            else {
+                return nil
+            }
+
+            state.entries.removeValue(forKey: key)
+            return value
+        }
+    }
+
     /// Removes a cached value.
     ///
     /// If computation is in progress, waiters will receive a cancelled error.

@@ -12,6 +12,7 @@
 import Testing
 
 @testable import Cache_Primitives
+import Queue_Primitives
 
 // MARK: - Test Support
 
@@ -76,6 +77,95 @@ struct Tests {
     @Suite struct Unit {}
     @Suite struct `Edge Case` {}
     @Suite struct Integration {}
+
+    private static func hasWaiter(
+        in cache: Cache<String, Int>,
+        for key: String
+    ) -> Bool {
+        cache._storage.withLock { state in
+            guard let entry = state.entries[key],
+                case .computing(let waiters) = entry.state
+            else {
+                return false
+            }
+            return !waiters.queue.isEmpty
+        }
+    }
+
+    private static func waitForWaiter(
+        in cache: Cache<String, Int>,
+        for key: String
+    ) async -> Bool {
+        for _ in 0..<1_000 {
+            if hasWaiter(in: cache, for: key) {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    @Test
+    func `false conditional removal preserves a ready value`() {
+        let cache = Cache<String, Int>()
+        cache.setValue(42, for: "answer")
+
+        let removed = cache.removeValue(for: "answer") { $0 != 42 }
+
+        #expect(removed == nil)
+        #expect(cache.cachedValue(for: "answer") == 42)
+    }
+
+    @Test
+    func `true conditional removal removes a ready value`() {
+        let cache = Cache<String, Int>()
+        cache.setValue(42, for: "answer")
+
+        let removed = cache.removeValue(for: "answer") { $0 == 42 }
+
+        #expect(removed == 42)
+        #expect(cache.cachedValue(for: "answer") == nil)
+    }
+
+    @Test
+    func `two expired readers preserve and join a replacement computation`() async throws {
+        let cache = Cache<String, Int>()
+        let producerStarted = Gate()
+        let releaseProducer = Gate()
+        cache.setValue(0, for: "record")
+
+        // The first expired reader atomically removes the stale ready value.
+        let firstRemoval = cache.removeValue(for: "record") { $0 == 0 }
+        #expect(firstRemoval == 0)
+
+        // A replacement begins and remains in flight while the second expired
+        // reader attempts its own conditional removal.
+        let producer = Task {
+            try await cache.value(for: "record") {
+                await producerStarted.open()
+                await releaseProducer.wait()
+                return 42
+            }
+        }
+        await producerStarted.wait()
+
+        let secondRemoval = cache.removeValue(for: "record") { _ in true }
+        #expect(secondRemoval == nil)
+
+        // The waiter-registration observation is internal only because the
+        // public cache surface deliberately does not expose entry state. It
+        // makes the producer/waiter interleaving explicit without sleeps.
+        let waiter = Task {
+            try await cache.value(for: "record") { -1 }
+        }
+        #expect(await Self.waitForWaiter(in: cache, for: "record"))
+
+        await releaseProducer.open()
+
+        #expect(try await producer.value == 42)
+        #expect(try await waiter.value == 42)
+        #expect(cache.cachedValue(for: "record") == 42)
+    }
 
     // MARK: F-002 - Waiter cancellation must not wait for publish
 
