@@ -25,7 +25,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `insert then getValue returns the value`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 4)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 4)
         cache.insert(42, forKey: "answer")
 
         #expect(cache.getValue(forKey: "answer") == 42)
@@ -35,7 +35,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `getValue for a missing key returns nil`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 4)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 4)
 
         #expect(cache.getValue(forKey: "missing") == nil)
         #expect(cache.isEmpty)
@@ -45,7 +45,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `insert beyond capacity evicts the oldest entry`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 2)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
         cache.insert(3, forKey: "c")
@@ -58,7 +58,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `count never exceeds capacity`() {
-        let cache = Cache<Int, Int>.Bounded(capacity: 3)
+        let cache = Cache<Int, Int, Never>.Bounded(capacity: 3)
         (0..<10).forEach { i in
             cache.insert(i, forKey: i)
             #expect(cache.count <= 3)
@@ -73,7 +73,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `capacity one always keeps the newest entry`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 1)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 1)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
 
@@ -86,7 +86,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `replacing an existing key does not evict and does not grow`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 2)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
         cache.insert(10, forKey: "a")
@@ -98,7 +98,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `replacement keeps the original insertion-order position`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 2)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
         cache.insert(10, forKey: "a")  // replaces; "a" remains oldest
@@ -113,7 +113,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `removeValue returns the removed value and frees a slot`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 2)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
 
@@ -129,7 +129,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `removeValue for a missing key returns nil`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 2)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
 
         #expect(cache.removeValue(forKey: "missing") == nil)
@@ -138,7 +138,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `removeAll empties the cache`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 3)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 3)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
 
@@ -157,7 +157,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `filter retains only matching entries`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 4)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 4)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
         cache.insert(3, forKey: "c")
@@ -172,7 +172,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `filter preserves eviction order of retained entries`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 3)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 3)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
         cache.insert(3, forKey: "c")
@@ -190,7 +190,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `filter that keeps everything changes nothing`() {
-        let cache = Cache<String, Int>.Bounded(capacity: 2)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
 
@@ -206,14 +206,14 @@ struct `Cache.Bounded Tests` {
     @Test
     func `zero capacity traps`() async {
         await #expect(processExitsWith: .failure) {
-            _ = Cache<String, Int>.Bounded(capacity: 0)
+            _ = Cache<String, Int, Never>.Bounded(capacity: 0)
         }
     }
 
     @Test
     func `negative capacity traps`() async {
         await #expect(processExitsWith: .failure) {
-            _ = Cache<String, Int>.Bounded(capacity: -1)
+            _ = Cache<String, Int, Never>.Bounded(capacity: -1)
         }
     }
 
@@ -222,7 +222,7 @@ struct `Cache.Bounded Tests` {
     @Test
     func `concurrent inserts across distinct keys never exceed capacity`() async {
         let capacity = 8
-        let cache = Cache<Int, Int>.Bounded(capacity: capacity)
+        let cache = Cache<Int, Int, Never>.Bounded(capacity: capacity)
 
         await withTaskGroup(of: Void.self) { group in
             (0..<16).forEach { worker in
@@ -240,7 +240,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `concurrent mixed reads writes and removals stay consistent`() async {
-        let cache = Cache<Int, Int>.Bounded(capacity: 32)
+        let cache = Cache<Int, Int, Never>.Bounded(capacity: 32)
 
         await withTaskGroup(of: Void.self) { group in
             (0..<4).forEach { worker in
@@ -276,7 +276,7 @@ struct `Cache.Bounded Tests` {
 
     @Test
     func `concurrent replacement of one key under contention keeps a single entry`() async {
-        let cache = Cache<String, Int>.Bounded(capacity: 4)
+        let cache = Cache<String, Int, Never>.Bounded(capacity: 4)
 
         await withTaskGroup(of: Void.self) { group in
             (0..<8).forEach { worker in

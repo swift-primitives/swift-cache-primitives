@@ -23,7 +23,7 @@ struct `Cache.Evict Tests` {
 
     @Test
     func `effect stores key, value, and reason`() {
-        let effect = Cache<String, Int>.Evict(
+        let effect = Cache<String, Int, Never>.Evict(
             key: "test-key",
             value: 42,
             reason: .explicit
@@ -36,7 +36,7 @@ struct `Cache.Evict Tests` {
 
     @Test
     func `arguments returns tuple`() {
-        let effect = Cache<String, Int>.Evict(
+        let effect = Cache<String, Int, Never>.Evict(
             key: "key",
             value: 100,
             reason: .capacityLimit
@@ -50,7 +50,7 @@ struct `Cache.Evict Tests` {
 
     @Test
     func `all eviction reasons`() {
-        let reasons: [Cache<String, Int>.Evict.Reason] = [
+        let reasons: [Cache<String, Int, Never>.Evict.Reason] = [
             .explicit,
             .capacityLimit,
             .expired,
@@ -59,7 +59,7 @@ struct `Cache.Evict Tests` {
         ]
 
         for reason in reasons {
-            let effect = Cache<String, Int>.Evict(
+            let effect = Cache<String, Int, Never>.Evict(
                 key: "key",
                 value: 0,
                 reason: reason
@@ -70,17 +70,17 @@ struct `Cache.Evict Tests` {
 
     @Test
     func `reason is Equatable`() {
-        #expect(Cache<String, Int>.Evict.Reason.explicit == .explicit)
-        #expect(Cache<String, Int>.Evict.Reason.explicit != .expired)
+        #expect(Cache<String, Int, Never>.Evict.Reason.explicit == .explicit)
+        #expect(Cache<String, Int, Never>.Evict.Reason.explicit != .expired)
     }
 
     @Test
     func `effect has Never failure type`() {
-        let _: Cache<String, Int>.Evict.Failure.Type = Never.self
+        let _: Cache<String, Int, Never>.Evict.Failure.Type = Never.self
     }
 
     @Test
     func `effect has Void value type`() {
-        let _: Cache<String, Int>.Evict.Value.Type = Void.self
+        let _: Cache<String, Int, Never>.Evict.Value.Type = Void.self
     }
 }

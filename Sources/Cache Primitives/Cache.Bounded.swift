@@ -35,7 +35,7 @@ extension Cache {
     /// ## Usage
     ///
     /// ```swift
-    /// let cache = Cache<String, Int>.Bounded(capacity: 2)
+    /// let cache = Cache<String, Int, Never>.Bounded(capacity: 2)
     /// cache.insert(1, forKey: "a")
     /// cache.insert(2, forKey: "b")
     /// cache.insert(3, forKey: "c")   // evicts "a" (oldest)

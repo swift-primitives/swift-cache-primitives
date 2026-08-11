@@ -41,12 +41,3 @@ extension Cache.Entry {
         }
     }
 }
-
-extension Cache.Entry.Waiters {
-    // reason: structural bottom-out — mirrors Cache.Error.computeFailed;
-    // `Cache` is not generic over the compute closure's error type.
-    // swiftlint:disable no_any_protocol_existential
-    @usableFromInline
-    typealias Outcome = Result<Value, any Swift.Error>
-    // swiftlint:enable no_any_protocol_existential
-}

@@ -22,14 +22,14 @@ import Testing
 /// The waiter task under test writes its outcome here the moment it
 /// resumes. A completion gate then gives the test a causal acknowledgement
 /// before it reads this result.
-private actor Outcome<Value: Sendable> {
+private actor Outcome<Value: Sendable, Failure: Swift.Error> {
     private var terminal: Terminal?
 }
 
 extension Outcome {
     enum Terminal {
         case succeeded(Value)
-        case threw(any Swift.Error)
+        case threw(Failure)
     }
 
     func record(_ outcome: Terminal) {
@@ -37,6 +37,10 @@ extension Outcome {
     }
 
     var value: Terminal? { terminal }
+}
+
+private struct Fault: Swift.Error, Equatable {
+    let code: Int
 }
 
 // MARK: - Tests
@@ -51,7 +55,7 @@ struct Tests {
 
     #if DEBUG
         private static func isComputing(
-            in cache: Cache<String, Int>,
+            in cache: Cache<String, Int, Never>,
             for key: String
         ) -> Bool {
             cache._storage.withLock { state in
@@ -67,7 +71,7 @@ struct Tests {
 
     @Test
     func `false conditional removal preserves a ready value`() {
-        let cache = Cache<String, Int>()
+        let cache = Cache<String, Int, Never>()
         cache.setValue(42, for: "answer")
 
         let removed = cache.removeValue(for: "answer") { $0 != 42 }
@@ -78,7 +82,7 @@ struct Tests {
 
     @Test
     func `true conditional removal removes a ready value`() {
-        let cache = Cache<String, Int>()
+        let cache = Cache<String, Int, Never>()
         cache.setValue(42, for: "answer")
 
         let removed = cache.removeValue(for: "answer") { $0 == 42 }
@@ -89,7 +93,7 @@ struct Tests {
 
     @Test
     func `a conditional removal predicate can read the same cache`() {
-        let cache = Cache<String, Int>()
+        let cache = Cache<String, Int, Never>()
         cache.setValue(42, for: "answer")
 
         let removed = cache.removeValue(for: "answer") { value in
@@ -103,7 +107,7 @@ struct Tests {
     #if DEBUG
         @Test
         func `two expired readers preserve and join a replacement computation`() async throws {
-            let cache = Cache<String, Int>()
+            let cache = Cache<String, Int, Never>()
             let producerStarted = Async.Gate()
             let releaseProducer = Async.Gate()
             let waiterEnqueued = Async.Gate()
@@ -150,10 +154,10 @@ struct Tests {
 
         @Test
         func `cancelling a waiter while compute is stuck resumes it promptly`() async throws {
-            let cache = Cache<String, Int>()
+            let cache = Cache<String, Int, Never>()
             let producerStarted = Async.Gate()
             let releaseProducer = Async.Gate()
-            let waiterOutcome = Outcome<Int>()
+            let waiterOutcome = Outcome<Int, Cache<String, Int, Never>.Error>()
             let waiterEnqueued = Async.Gate()
             let waiterCompleted = Async.Gate()
 
@@ -161,7 +165,7 @@ struct Tests {
             // the test explicitly releases it at teardown - simulating a
             // compute closure that hangs.
             let producer = Task {
-                do throws(Cache<String, Int>.Error) {
+                do throws(Cache<String, Int, Never>.Error) {
                     _ = try await cache.value(for: "stuck") {
                         _ = producerStarted.open()
                         await releaseProducer.wait()
@@ -179,8 +183,8 @@ struct Tests {
             // resumes.
             cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
             let waiter = Task {
-                let outcome: Outcome<Int>.Terminal
-                do throws(Cache<String, Int>.Error) {
+                let outcome: Outcome<Int, Cache<String, Int, Never>.Error>.Terminal
+                do throws(Cache<String, Int, Never>.Error) {
                     let value = try await cache.value(for: "stuck") { 0 }
                     outcome = .succeeded(value)
                 } catch {
@@ -203,13 +207,9 @@ struct Tests {
 
             switch observed {
             case .threw(let error):
-                if let cacheError = error as? Cache<String, Int>.Error {
-                    guard case .cancelled = cacheError else {
-                        Issue.record("expected .cancelled, got \(cacheError)")
-                        break
-                    }
-                } else {
-                    Issue.record("expected a Cache.Error, got \(type(of: error)): \(error)")
+                guard case .cancelled = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    break
                 }
 
             case .succeeded(let value):
@@ -228,24 +228,75 @@ struct Tests {
         }
     #endif
 
+    #if DEBUG
+        @Test
+        func `one failing producer preserves typed failure for every waiter`() async {
+            let failure = Fault(code: 7)
+            let cache = Cache<String, Int, Fault>()
+            let producerStarted = Async.Gate()
+            let releaseProducer = Async.Gate()
+            let waiterEnqueued = Async.Gate()
+
+            let producer = Task { () async throws(Cache<String, Int, Fault>.Error) -> Int in
+                try await cache.value(for: "shared-failure") {
+                    () async throws(Fault) -> Int in
+                    _ = producerStarted.open()
+                    await releaseProducer.wait()
+                    throw failure
+                }
+            }
+            await producerStarted.wait()
+
+            cache._storage.testing.waiterEnqueued.withLock { acknowledgement in
+                acknowledgement = { _ = waiterEnqueued.open() }
+            }
+            let waiter = Task { () async throws(Cache<String, Int, Fault>.Error) -> Int in
+                try await cache.value(for: "shared-failure") {
+                    () async throws(Fault) -> Int in
+                    Issue.record("a waiter must not start a second producer")
+                    return -1
+                }
+            }
+            await waiterEnqueued.wait()
+            _ = releaseProducer.open()
+
+            switch await producer.result {
+            case .failure(.computeFailed(let observed)):
+                #expect(observed == failure)
+            case .failure(let error):
+                Issue.record("expected the producer's typed failure, got \(error)")
+            case .success(let value):
+                Issue.record("expected producer failure, got \(value)")
+            }
+
+            switch await waiter.result {
+            case .failure(.computeFailed(let observed)):
+                #expect(observed == failure)
+            case .failure(let error):
+                Issue.record("expected the waiter's typed failure, got \(error)")
+            case .success(let value):
+                Issue.record("expected waiter failure, got \(value)")
+            }
+
+            #expect(cache.isEmpty)
+        }
+    #endif
+
     // MARK: F-001 - Failed computations must not poison later attempts
 
     @Test
     func `a failed computation does not poison the next request`() async throws {
-        struct Fault: Swift.Error, Equatable {
-            let code: Int
-        }
-
-        let cache = Cache<String, Int>()
+        let cache = Cache<String, Int, Fault>()
 
         // First attempt fails; the caller receives the compute error.
-        do throws(Cache<String, Int>.Error) {
-            _ = try await cache.value(for: "flaky") { throw Fault(code: 7) }
+        do throws(Cache<String, Int, Fault>.Error) {
+            _ = try await cache.value(for: "flaky") {
+                () async throws(Fault) -> Int in
+                throw Fault(code: 7)
+            }
             Issue.record("expected the first computation's error to propagate")
         } catch {
-            guard case .computeFailed(let underlying) = error,
-                let computeError = underlying as? Fault
-            else {
+            guard case .computeFailed(let computeError) = error else {
                 Issue.record("expected .computeFailed(Fault), got \(error)")
                 return
             }

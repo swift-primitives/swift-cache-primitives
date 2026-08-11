@@ -23,13 +23,13 @@ extension Cache {
     /// ```swift
     /// // Define a handler for computation
     /// struct UserCacheHandler: Effect.Handler.Protocol {
-    ///     typealias Handled = Cache<String, User>.Compute<any Error>
+    ///     typealias Handled = Cache<String, User, Database.Error>.Compute
     ///
     ///     let database: Database
     ///
     ///     func handle(
     ///         _ effect: Handled,
-    ///         continuation: consuming Effect.Continuation.One<User, any Error>
+    ///         continuation: consuming Effect.Continuation.One<User, Database.Error>
     ///     ) async {
     ///         do {
     ///             let user = try await database.fetch(id: effect.key)
@@ -41,13 +41,9 @@ extension Cache {
     /// }
     /// ```
     ///
-    /// - Note: Uses `_Value` to satisfy `Effect.Protocol.Value` with the
-    ///   outer `Cache.Value` generic parameter, which cannot be inferred
-    ///   across the generic nesting boundary when `Compute` introduces
-    ///   its own generic parameter `E`. See
-    ///   `Experiments/cache-effect-type-nesting/` for 8 approaches tested
-    ///   (Swift 6.2.4) and why this workaround is necessary.
-    public struct Compute<E: Swift.Error>: Effect.`Protocol` {
+    /// - Note: Uses `_Value` and `_Failure` to satisfy the effect protocol
+    ///   without shadowing the corresponding outer cache parameters.
+    public struct Compute: Effect.`Protocol` {
         /// The key for which to compute a value.
         public let key: Key
 
@@ -69,7 +65,7 @@ extension Cache.Compute {
     public typealias Value = Cache._Value
 
     /// The effect's failure type.
-    public typealias Failure = E
+    public typealias Failure = Cache._Failure
 
     /// The arguments for this effect (the key).
     public var arguments: Key { key }

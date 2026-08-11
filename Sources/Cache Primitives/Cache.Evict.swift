@@ -21,7 +21,7 @@ extension Cache {
     ///
     /// ```swift
     /// struct EvictionLogger: Effect.Handler.Protocol {
-    ///     typealias Handled = Cache<String, User>.Evict
+    ///     typealias Handled = Cache<String, User, Never>.Evict
     ///
     ///     func handle(
     ///         _ effect: Handled,

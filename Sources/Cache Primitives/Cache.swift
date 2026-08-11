@@ -50,7 +50,7 @@ public import Storage_Contiguous_Primitives
 /// ## Usage
 ///
 /// ```swift
-/// let cache = Cache<String, User>()
+/// let cache = Cache<String, User, Database.Error>()
 ///
 /// // First call computes, concurrent calls wait
 /// let user = try await cache.value(for: "user-123") {
@@ -71,7 +71,7 @@ public import Storage_Contiguous_Primitives
 /// returns. If the computing task itself is cancelled (or otherwise fails),
 /// current waiters still receive that error, but the entry does not stay
 /// poisoned: it resets so the next request recomputes.
-public struct Cache<Key: Hashable & Sendable, Value: Sendable>: Sendable {
+public struct Cache<Key: Hashable & Sendable, Value: Sendable, Failure: Swift.Error>: Sendable {
     @usableFromInline
     let _storage: Storage
 
@@ -82,7 +82,7 @@ public struct Cache<Key: Hashable & Sendable, Value: Sendable>: Sendable {
     }
 }
 
-// MARK: - Value Capture
+// MARK: - Generic Capture
 
 extension Cache {
     /// Captures the outer `Value` generic parameter under a non-shadowable name.
@@ -96,6 +96,13 @@ extension Cache {
     /// - SeeAlso: `Experiments/cache-effect-type-nesting/` for empirical
     ///   verification of this workaround.
     public typealias _Value = Value
+
+    /// Captures the outer `Failure` generic parameter under a non-shadowable name.
+    ///
+    /// ``Compute`` must declare `typealias Failure` to satisfy
+    /// `Effect.Protocol.Failure`. `_Failure` preserves access to the cache's
+    /// producer-failure type from that nested scope.
+    public typealias _Failure = Failure
 }
 
 // MARK: - Value Retrieval
@@ -133,12 +140,7 @@ extension Cache {
     ///           `Cache.Error.cancelled` if cancelled while waiting.
     public func value(
         for key: Key,
-        // reason: structural bottom-out — the compute closure's error type
-        // is not generic on Cache; it is boxed into Cache.Error.computeFailed
-        // (any Swift.Error). Typing this closure would need a generic-error
-        // redesign of the whole Cache/Action/Entry.State chain.
-        // swiftlint:disable:next typed_throws_required
-        compute: @Sendable () async throws -> Value
+        compute: @Sendable () async throws(Failure) -> Value
     ) async throws(Self.Error) -> Value {
         // Phase 1: Check state under lock, determine action
         let action = _storage.withLock { state -> Action in
@@ -200,82 +202,77 @@ extension Cache {
     func waitForValue(entry: Entry) async throws(Self.Error) -> Value {
         let flag = Async.Waiter.Flag()
 
-        let outcome: Entry.Waiters.Outcome
-        do {
-            outcome = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    let resumption = _storage.withLock { _ -> Async.Waiter.Resumption? in
-                        switch entry.state {
-                        case .ready(let value):
-                            // Race: computation completed before we could wait
+        let outcome: Entry.Waiters.Outcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumption = _storage.withLock { _ -> Async.Waiter.Resumption? in
+                    switch entry.state {
+                    case .ready(let value):
+                        // Race: computation completed before we could wait
+                        return Async.Waiter.Resumption {
+                            continuation.resume(returning: .success(value))
+                        }
+
+                    case .failed(let error):
+                        // Race: computation failed before we could wait
+                        return Async.Waiter.Resumption {
+                            continuation.resume(returning: .failure(error))
+                        }
+
+                    case .computing(let waiters):
+                        // Defensive: if the task was already cancelled
+                        // before we reached registration (e.g. cancelled
+                        // synchronously as part of entering
+                        // `withTaskCancellationHandler`, before this
+                        // closure runs), do not enqueue - resume
+                        // immediately instead. `onCancel` firing
+                        // concurrently is safe: `flag.cancel()` is
+                        // idempotent, and a resulting
+                        // `pumpCancelledWaiters` call simply finds
+                        // nothing left to reap. See F-002.
+                        if flag.cancelled {
                             return Async.Waiter.Resumption {
-                                continuation.resume(returning: .success(value))
-                            }
-
-                        case .failed(let error):
-                            // Race: computation failed before we could wait
-                            return Async.Waiter.Resumption {
-                                continuation.resume(returning: .failure(error))
-                            }
-
-                        case .computing(let waiters):
-                            // Defensive: if the task was already cancelled
-                            // before we reached registration (e.g. cancelled
-                            // synchronously as part of entering
-                            // `withTaskCancellationHandler`, before this
-                            // closure runs), do not enqueue - resume
-                            // immediately instead. `onCancel` firing
-                            // concurrently is safe: `flag.cancel()` is
-                            // idempotent, and a resulting
-                            // `pumpCancelledWaiters` call simply finds
-                            // nothing left to reap. See F-002.
-                            if flag.cancelled {
-                                return Async.Waiter.Resumption {
-                                    continuation.resume(returning: .failure(CancellationError()))
-                                }
-                            }
-
-                            // Add ourselves to the waiter queue
-                            let asyncContinuation = Async.Continuation<Entry.Waiters.Outcome> { outcome in
-                                continuation.resume(returning: outcome)
-                            }
-                            let waiterEntry = Async.Waiter.Entry(
-                                continuation: asyncContinuation,
-                                flag: flag
-                            )
-                            waiters.queue.enqueue(waiterEntry)
-                            entry.state = .computing(waiters)
-                            return nil  // Suspended - no immediate resumption
-
-                        case .empty:
-                            // Entry was reset - treat as error
-                            return Async.Waiter.Resumption {
-                                continuation.resume(throwing: Error.cancelled)
+                                continuation.resume(returning: .cancelled)
                             }
                         }
-                    }
 
-                    // Resume outside lock if needed.
-                    if let resumption {
-                        resumption.resume()
-                    } else {
-                        #if DEBUG
-                            let waiterEnqueued = _storage.testing.waiterEnqueued.withLock { $0 }
-                            waiterEnqueued?()
-                        #endif
+                        // Add ourselves to the waiter queue
+                        let asyncContinuation = Async.Continuation<Entry.Waiters.Outcome> { outcome in
+                            continuation.resume(returning: outcome)
+                        }
+                        let waiterEntry = Async.Waiter.Entry(
+                            continuation: asyncContinuation,
+                            flag: flag
+                        )
+                        waiters.queue.enqueue(waiterEntry)
+                        entry.state = .computing(waiters)
+                        return nil  // Suspended - no immediate resumption
+
+                    case .empty:
+                        // Entry was reset - treat as cancellation
+                        return Async.Waiter.Resumption {
+                            continuation.resume(returning: .cancelled)
+                        }
                     }
                 }
-            } onCancel: {
-                // Set the flag, then remove this waiter from the queue and
-                // resume it immediately with `.cancelled` - do not leave it
-                // stranded until the producer eventually publishes (which
-                // may never happen if `compute` hangs). See F-002.
-                if flag.cancel() {
-                    Task { self.pumpCancelledWaiters(entry: entry) }
+
+                // Resume outside lock if needed.
+                if let resumption {
+                    resumption.resume()
+                } else {
+                    #if DEBUG
+                        let waiterEnqueued = _storage.testing.waiterEnqueued.withLock { $0 }
+                        waiterEnqueued?()
+                    #endif
                 }
             }
-        } catch {
-            throw .cancelled
+        } onCancel: {
+            // Set the flag, then remove this waiter from the queue and
+            // resume it immediately with `.cancelled` - do not leave it
+            // stranded until the producer eventually publishes (which
+            // may never happen if `compute` hangs). See F-002.
+            if flag.cancel() {
+                Task { self.pumpCancelledWaiters(entry: entry) }
+            }
         }
 
         // Unwrap the result
@@ -284,10 +281,10 @@ extension Cache {
             return value
 
         case .failure(let error):
-            if error is CancellationError {
-                throw .cancelled
-            }
             throw .computeFailed(error)
+
+        case .cancelled:
+            throw .cancelled
         }
     }
 }
@@ -321,7 +318,7 @@ extension Cache {
 
             while let flaggedEntry = flagged.dequeue() {
                 resumptions.append(
-                    flaggedEntry.resumption { _ in .failure(CancellationError()) }
+                    flaggedEntry.resumption { _ in .cancelled }
                 )
             }
         }
@@ -342,23 +339,22 @@ extension Cache {
     func computeAndPublish(
         key: Key,
         entry: Entry,
-        // reason: structural bottom-out — the compute closure's error type
-        // is not generic on Cache; it is boxed into Cache.Error.computeFailed
-        // (any Swift.Error). Typing this closure would need a generic-error
-        // redesign of the whole Cache/Action/Entry.State chain.
-        // swiftlint:disable:next typed_throws_required
-        compute: @Sendable () async throws -> Value
+        compute: @Sendable () async throws(Failure) -> Value
     ) async throws(Self.Error) -> Value {
         // Run computation outside lock
-        // reason: structural bottom-out — mirrors Cache.Error.computeFailed.
-        // swiftlint:disable no_any_protocol_existential
-        let result: Result<Value, any Swift.Error>
-        // swiftlint:enable no_any_protocol_existential
-        do {
+        let result: Result<Value, Failure>
+        do throws(Failure) {
             let value = try await compute()
             result = .success(value)
         } catch {
             result = .failure(error)
+        }
+
+        let outcome: Entry.Waiters.Outcome = switch result {
+        case .success(let value):
+            .success(value)
+        case .failure(let error):
+            .failure(error)
         }
 
         // Publish result under lock, collect resumptions
@@ -392,9 +388,9 @@ extension Cache {
             waiters.queue.drain { waiterEntry in
                 // Check if waiter was cancelled
                 if waiterEntry.flag.cancelled {
-                    resumptions.append(waiterEntry.resumption(with: .failure(CancellationError())))
+                    resumptions.append(waiterEntry.resumption(with: .cancelled))
                 } else {
-                    resumptions.append(waiterEntry.resumption(with: result))
+                    resumptions.append(waiterEntry.resumption(with: outcome))
                 }
             }
         }
@@ -568,7 +564,7 @@ extension Cache {
             case .computing(let waiters):
                 // Cancel all waiters
                 waiters.queue.drain { waiterEntry in
-                    resumptions.append(waiterEntry.resumption(with: .failure(CancellationError())))
+                    resumptions.append(waiterEntry.resumption(with: .cancelled))
                 }
                 return nil
 
@@ -593,7 +589,7 @@ extension Cache {
             for (_, entry) in state.entries {
                 if case .computing(let waiters) = entry.state {
                     waiters.queue.drain { waiterEntry in
-                        resumptions.append(waiterEntry.resumption(with: .failure(CancellationError())))
+                        resumptions.append(waiterEntry.resumption(with: .cancelled))
                     }
                 }
             }
@@ -624,12 +620,7 @@ extension Cache {
     public func value(
         for key: Key,
         if shouldCompute: Bool,
-        // reason: structural bottom-out — the compute closure's error type
-        // is not generic on Cache; it is boxed into Cache.Error.computeFailed
-        // (any Swift.Error). Typing this closure would need a generic-error
-        // redesign of the whole Cache/Action/Entry.State chain.
-        // swiftlint:disable:next typed_throws_required
-        compute: @Sendable () async throws -> Value
+        compute: @Sendable () async throws(Failure) -> Value
     ) async throws(Self.Error) -> Value? {
         // Quick check for cached value
         if let cached = cachedValue(for: key) {

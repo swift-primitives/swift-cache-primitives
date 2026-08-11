@@ -9,15 +9,12 @@
 //
 // ===----------------------------------------------------------------------===//
 
-extension Cache {
-    /// Action to take after inspecting cache state.
+extension Cache.Entry.Waiters {
+    /// The terminal outcome delivered from one producer to its waiters.
     @usableFromInline
-    enum Action {
-        case returnValue(Value)
-
-        case throwError(Failure)
-
-        case wait(Key, Entry)
-        case compute(Key, Entry)
+    enum Outcome: Sendable {
+        case success(Value)
+        case failure(Failure)
+        case cancelled
     }
 }
