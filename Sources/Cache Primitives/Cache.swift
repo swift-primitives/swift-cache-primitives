@@ -236,7 +236,8 @@ extension Cache {
                             }
 
                             // Add ourselves to the waiter queue
-                            let asyncContinuation = Async.Continuation<Entry.Waiters.Outcome> { outcome in
+                            let asyncContinuation = Async.Continuation<Entry.Waiters.Outcome> {
+                                outcome in
                                 continuation.resume(returning: outcome)
                             }
                             let waiterEntry = Async.Waiter.Entry(
@@ -593,7 +594,9 @@ extension Cache {
             for (_, entry) in state.entries {
                 if case .computing(let waiters) = entry.state {
                     waiters.queue.drain { waiterEntry in
-                        resumptions.append(waiterEntry.resumption(with: .failure(CancellationError())))
+                        resumptions.append(
+                            waiterEntry.resumption(with: .failure(CancellationError()))
+                        )
                     }
                 }
             }
