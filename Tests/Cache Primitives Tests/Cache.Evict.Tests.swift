@@ -1,19 +1,6 @@
-// ===----------------------------------------------------------------------===//
-//
-// This source file is part of the swift-cache open source project
-//
-// Copyright (c) 2025 Coen ten Thije Boonkkamp and the swift-cache project authors
-// Licensed under Apache License v2.0
-//
-// See LICENSE for license information
-//
-// ===----------------------------------------------------------------------===//
-
 import Testing
 
 @testable import Cache_Primitives
-
-// MARK: - Tests
 
 @Suite
 struct `Cache.Evict Tests` {

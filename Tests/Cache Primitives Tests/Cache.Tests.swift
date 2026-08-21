@@ -1,27 +1,9 @@
-// ===----------------------------------------------------------------------===//
-//
-// This source file is part of the swift-cache open source project
-//
-// Copyright (c) 2025 Coen ten Thije Boonkkamp and the swift-cache project authors
-// Licensed under Apache License v2.0
-//
-// See LICENSE for license information
-//
-// ===----------------------------------------------------------------------===//
-
 import Async_Primitives
 import Synchronization
 import Testing
 
 @testable import Cache_Primitives
 
-// MARK: - Test Support
-
-/// A box recording a task's terminal outcome for the test body.
-///
-/// The waiter task under test writes its outcome here the moment it
-/// resumes. A completion gate then gives the test a causal acknowledgement
-/// before it reads this result.
 private actor Outcome<Value: Sendable> {
     private var terminal: Terminal?
 }
@@ -39,10 +21,6 @@ extension Outcome {
     var value: Terminal? { terminal }
 }
 
-// MARK: - Tests
-
-/// Regression tests for `Cache` (generic-namespace source: top-level
-/// `@Suite` carve-out per [INST-TEST-013]).
 @Suite("Cache")
 struct Tests {
     @Suite struct Unit {}
@@ -109,12 +87,9 @@ struct Tests {
             let waiterEnqueued = Async.Gate()
             cache.setValue(0, for: "record")
 
-            // The first expired reader atomically removes the stale ready value.
             let firstRemoval = cache.removeValue(for: "record") { $0 == 0 }
             #expect(firstRemoval == 0)
 
-            // A replacement begins and remains in flight while the second expired
-            // reader attempts its own conditional removal.
             let producer = Task {
                 try await cache.value(for: "record") {
                     _ = producerStarted.open()
@@ -127,9 +102,6 @@ struct Tests {
             let secondRemoval = cache.removeValue(for: "record") { _ in true }
             #expect(secondRemoval == nil)
 
-            // The public cache surface deliberately does not expose entry state.
-            // This debug-only hook acknowledges the exact enqueue event, so the
-            // release below cannot race a scheduler-polling budget.
             cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
             let waiter = Task {
                 try await cache.value(for: "record") { -1 }
@@ -146,7 +118,6 @@ struct Tests {
     #endif
 
     #if DEBUG
-        // MARK: F-002 - Waiter cancellation must not wait for publish
 
         @Test
         func `cancelling a waiter while compute is stuck resumes it promptly`() async throws {
@@ -157,9 +128,6 @@ struct Tests {
             let waiterEnqueued = Async.Gate()
             let waiterCompleted = Async.Gate()
 
-            // The producer becomes the "computing" party and then parks until
-            // the test explicitly releases it at teardown - simulating a
-            // compute closure that hangs.
             let producer = Task {
                 do throws(Cache<String, Int>.Error) {
                     _ = try await cache.value(for: "stuck") {
@@ -168,15 +136,12 @@ struct Tests {
                         return 0
                     }
                 } catch {
-                    // Discarded: this producer's own error path isn't under test here.
+
                 }
             }
 
             await producerStarted.wait()
 
-            // This second request for the same key becomes a waiter (the entry
-            // is already `.computing`). It records its outcome the moment it
-            // resumes.
             cache._storage.testing.waiterEnqueued.withLock { $0 = { _ = waiterEnqueued.open() } }
             let waiter = Task {
                 let outcome: Outcome<Int>.Terminal
@@ -195,9 +160,6 @@ struct Tests {
 
             waiter.cancel()
 
-            // The waiter opens this gate only after recording its terminal result.
-            // This is a causal cancellation/resumption acknowledgement, not a
-            // scheduler or wall-clock polling budget.
             await waiterCompleted.wait()
             let observed = await waiterOutcome.value
 
@@ -221,14 +183,11 @@ struct Tests {
                 Issue.record("waiter completed without recording a terminal result")
             }
 
-            // Teardown: release the parked producer and let both tasks finish.
             _ = releaseProducer.open()
             _ = await producer.value
             _ = await waiter.value
         }
     #endif
-
-    // MARK: F-001 - Failed computations must not poison later attempts
 
     @Test
     func `a failed computation does not poison the next request`() async throws {
@@ -238,7 +197,6 @@ struct Tests {
 
         let cache = Cache<String, Int>()
 
-        // First attempt fails; the caller receives the compute error.
         do throws(Cache<String, Int>.Error) {
             _ = try await cache.value(for: "flaky") { throw Fault(code: 7) }
             Issue.record("expected the first computation's error to propagate")
@@ -252,13 +210,9 @@ struct Tests {
             #expect(computeError == Fault(code: 7))
         }
 
-        // The failure must not be cached: per the README's non-poisoning
-        // promise ("a failed computation does not poison later attempts"),
-        // the next request for the same key recomputes.
         let recovered = try await cache.value(for: "flaky") { 42 }
         #expect(recovered == 42)
 
-        // And the recomputed value is now cached normally.
         #expect(cache.cachedValue(for: "flaky") == 42)
     }
 }

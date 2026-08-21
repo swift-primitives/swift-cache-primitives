@@ -1,27 +1,12 @@
-// ===----------------------------------------------------------------------===//
-//
-// This source file is part of the swift-cache open source project
-//
-// Copyright (c) 2025 Coen ten Thije Boonkkamp and the swift-cache project authors
-// Licensed under Apache License v2.0
-//
-// See LICENSE for license information
-//
-// ===----------------------------------------------------------------------===//
-
 import Testing
 
 @testable import Cache_Primitives
-
-// MARK: - Tests
 
 @Suite
 struct `Cache.Bounded Tests` {
     @Suite struct Unit {}
     @Suite struct `Edge Case` {}
     @Suite struct Integration {}
-
-    // MARK: Insert / get
 
     @Test
     func `insert then getValue returns the value`() {
@@ -40,8 +25,6 @@ struct `Cache.Bounded Tests` {
         #expect(cache.getValue(forKey: "missing") == nil)
         #expect(cache.isEmpty)
     }
-
-    // MARK: Eviction law
 
     @Test
     func `insert beyond capacity evicts the oldest entry`() {
@@ -64,7 +47,7 @@ struct `Cache.Bounded Tests` {
             #expect(cache.count <= 3)
         }
         #expect(cache.count == 3)
-        // The three newest survive.
+
         #expect(cache.getValue(forKey: 7) == 7)
         #expect(cache.getValue(forKey: 8) == 8)
         #expect(cache.getValue(forKey: 9) == 9)
@@ -81,8 +64,6 @@ struct `Cache.Bounded Tests` {
         #expect(cache.getValue(forKey: "b") == 2)
         #expect(cache.count == 1)
     }
-
-    // MARK: Replacement law
 
     @Test
     func `replacing an existing key does not evict and does not grow`() {
@@ -101,15 +82,13 @@ struct `Cache.Bounded Tests` {
         let cache = Cache<String, Int>.Bounded(capacity: 2)
         cache.insert(1, forKey: "a")
         cache.insert(2, forKey: "b")
-        cache.insert(10, forKey: "a")  // replaces; "a" remains oldest
-        cache.insert(3, forKey: "c")  // evicts "a", not "b"
+        cache.insert(10, forKey: "a")
+        cache.insert(3, forKey: "c")
 
         #expect(cache.getValue(forKey: "a") == nil)
         #expect(cache.getValue(forKey: "b") == 2)
         #expect(cache.getValue(forKey: "c") == 3)
     }
-
-    // MARK: Removal
 
     @Test
     func `removeValue returns the removed value and frees a slot`() {
@@ -120,7 +99,6 @@ struct `Cache.Bounded Tests` {
         #expect(cache.removeValue(forKey: "b") == 2)
         #expect(cache.count == 1)
 
-        // The freed slot means this insert must NOT evict "a".
         cache.insert(3, forKey: "c")
         #expect(cache.getValue(forKey: "a") == 1)
         #expect(cache.getValue(forKey: "c") == 3)
@@ -148,12 +126,9 @@ struct `Cache.Bounded Tests` {
         #expect(cache.count == 0)
         #expect(cache.getValue(forKey: "a") == nil)
 
-        // Cache remains usable after clearing.
         cache.insert(3, forKey: "c")
         #expect(cache.getValue(forKey: "c") == 3)
     }
-
-    // MARK: Filtering
 
     @Test
     func `filter retains only matching entries`() {
@@ -177,9 +152,9 @@ struct `Cache.Bounded Tests` {
         cache.insert(2, forKey: "b")
         cache.insert(3, forKey: "c")
 
-        cache.filter { key, _ in key != "a" }  // drops "a"; order is now b, c
-        cache.insert(4, forKey: "d")  // count 3, no eviction
-        cache.insert(5, forKey: "e")  // evicts "b" (oldest retained)
+        cache.filter { key, _ in key != "a" }
+        cache.insert(4, forKey: "d")
+        cache.insert(5, forKey: "e")
 
         #expect(cache.getValue(forKey: "b") == nil)
         #expect(cache.getValue(forKey: "c") == 3)
@@ -201,8 +176,6 @@ struct `Cache.Bounded Tests` {
         #expect(cache.getValue(forKey: "b") == 2)
     }
 
-    // MARK: Capacity contract
-
     @Test
     func `zero capacity traps`() async {
         await #expect(processExitsWith: .failure) {
@@ -216,8 +189,6 @@ struct `Cache.Bounded Tests` {
             _ = Cache<String, Int>.Bounded(capacity: -1)
         }
     }
-
-    // MARK: Concurrency
 
     @Test
     func `concurrent inserts across distinct keys never exceed capacity`() async {

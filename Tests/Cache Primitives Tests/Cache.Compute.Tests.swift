@@ -1,25 +1,10 @@
-// ===----------------------------------------------------------------------===//
-//
-// This source file is part of the swift-cache open source project
-//
-// Copyright (c) 2025 Coen ten Thije Boonkkamp and the swift-cache project authors
-// Licensed under Apache License v2.0
-//
-// See LICENSE for license information
-//
-// ===----------------------------------------------------------------------===//
-
 import Testing
 
 @testable import Cache_Primitives
 
-// MARK: - Test Error
-
 private struct Fault: Swift.Error, Sendable, Equatable {
     let code: Int
 }
-
-// MARK: - Tests
 
 @Suite
 struct `Cache.Compute Tests` {
@@ -57,7 +42,6 @@ struct `Cache.Compute Tests` {
     func `effect conforms to Effect.Protocol`() {
         let effect = Cache<String, Int>.Compute<Fault>(key: "key")
 
-        // Verify associated types
         let _: String = effect.arguments
         let _: Cache<String, Int>.Compute<Fault>.Value.Type = Int.self
         let _: Cache<String, Int>.Compute<Fault>.Failure.Type = Fault.self
